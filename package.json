@@ -3,15 +3,14 @@
   "description": "Secure, anonymous, streaming file transfer",
   "version": "1.0.0",
   "author": {
-    "name": "Feross Aboukhadijeh",
-    "email": "feross@feross.org",
-    "url": "http://feross.org/"
+    "name": "WebTorrent, LLC",
+    "email": "feross@webtorrent.io",
+    "url": "https://webtorrent.io"
   },
   "bugs": {
-    "url": "https://github.com/feross/instant.io/issues"
+    "url": "https://github.com/webtorrent/instant.io/issues"
   },
   "dependencies": {
-    "browserify": "^13.0.0",
     "compression": "^1.0.9",
     "cors": "^2.7.1",
     "create-torrent": "^3.22.0",
@@ -19,26 +18,25 @@
     "downgrade": "^1.0.0",
     "drag-drop": "^2.0.0",
     "express": "^4.8.5",
-    "jade": "^1.5.0",
-    "listify": "^1.0.0",
-    "nib": "^1.0.3",
-    "pretty-bytes": "^3.0.0",
-    "run-parallel": "^1.0.0",
-    "stylus": "^0.54.0",
+    "moment": "^2.15.1",
+    "prettier-bytes": "^1.0.3",
+    "pug": "^2.0.0-beta11",
+    "simple-get": "^2.4.0",
     "throttleit": "^1.0.0",
-    "thunky": "^0.1.0",
-    "twilio": "^2.1.0",
+    "thunky": "^1.0.0",
+    "twilio": "^2.9.2",
     "unlimited": "^1.1.0",
     "upload-element": "^1.0.1",
-    "webtorrent": "0.x",
-    "xhr": "^2.0.0"
+    "webtorrent": "0.x"
   },
   "devDependencies": {
+    "browserify": "^14.0.0",
     "nodemon": "^1.2.1",
-    "standard": "^6.0.4",
+    "standard": "*",
+    "stylus": "^0.54.0",
     "watchify": "^3.1.0"
   },
-  "homepage": "http://feross.org",
+  "homepage": "https://instant.io",
   "keywords": [
     "data channel",
     "file transfer",
@@ -50,11 +48,11 @@
   "private": true,
   "repository": {
     "type": "git",
-    "url": "git://github.com/feross/instant.io.git"
+    "url": "git://github.com/webtorrent/instant.io.git"
   },
   "scripts": {
     "build": "npm run build-css && npm run build-js",
-    "build-css": "stylus -u nib css/main.styl -o static/ -c",
+    "build-css": "stylus css/main.styl -o static/ -c",
     "build-js": "browserify client > static/bundle.js",
     "secret-download": "rsync -a -O -v --delete -e \"ssh -p 44444\" feross@instant.io:\"/home/feross/www/instant.io/secret/\" secret/",
     "secret-upload": "rsync -a -O -v --delete -e \"ssh -p 44444\" secret/ feross@instant.io:/home/feross/www/instant.io/secret/",
@@ -63,7 +61,7 @@
     "test": "standard",
     "update-authors": "./bin/update-authors.sh",
     "watch": "npm run watch-css & npm run watch-js & DEBUG=instant* nodemon server",
-    "watch-css": "stylus -u nib css/main.styl -o static/ -w",
+    "watch-css": "stylus css/main.styl -o static/ -w",
     "watch-js": "watchify client -o static/bundle.js -dv"
   }
 }

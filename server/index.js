@@ -1,13 +1,9 @@
 var compress = require('compression')
 var cors = require('cors')
-var debug = require('debug')('instant')
 var downgrade = require('downgrade')
 var express = require('express')
-var fs = require('fs')
 var http = require('http')
-var https = require('https')
-var jade = require('jade')
-var parallel = require('run-parallel')
+var pug = require('pug')
 var path = require('path')
 var twilio = require('twilio')
 var unlimited = require('unlimited')
@@ -16,39 +12,40 @@ var url = require('url')
 var config = require('../config')
 
 var CORS_WHITELIST = [
-  'http://instant-io.herokuapp.com',
-  'https://instant-io.herokuapp.com',
-  'http://instant.rom1504.fr',
-  'https://instant.rom1504.fr',
-  'http://whiteboard.webtorrent.io',
-  'http://file.pizza',
-  'https://file.pizza',
+  // Official WebTorrent site
   'http://webtorrent.io',
-  'https://webtorrent.io'
+  'https://webtorrent.io',
+
+  // Favor to friends :)
+  'http://rollcall.audio',
+  'https://rollcall.audio'
 ]
 
-var secret, secretKey, secretCert
+var secret
 try {
   secret = require('../secret')
-  secretKey = fs.readFileSync(path.join(__dirname, '../secret/instant.io.key'))
-  secretCert = fs.readFileSync(path.join(__dirname, '../secret/instant.io.chained.crt'))
 } catch (err) {}
 
 var app = express()
-var httpServer = http.createServer(app)
-var httpsServer
-if (secretKey && secretCert) {
-  httpsServer = https.createServer({ key: secretKey, cert: secretCert }, app)
-}
+var server = http.createServer(app)
 
 unlimited()
 
-// Templating
-app.set('views', path.join(__dirname, 'views'))
-app.set('view engine', 'jade')
-app.set('x-powered-by', false)
-app.engine('jade', jade.renderFile)
+// Trust "X-Forwarded-For" and "X-Forwarded-Proto" nginx headers
+app.enable('trust proxy')
 
+// Disable "powered by express" header
+app.set('x-powered-by', false)
+
+// Use pug for templates
+app.set('views', path.join(__dirname, 'views'))
+app.set('view engine', 'pug')
+app.engine('pug', pug.renderFile)
+
+// Pretty print JSON
+app.set('json spaces', 2)
+
+// Use GZIP
 app.use(compress())
 
 app.use(function (req, res, next) {
@@ -112,21 +109,17 @@ try {
 
 function updateIceServers () {
   twilioClient.tokens.create({}, function (err, token) {
-    if (err) return error(err)
+    if (err) return console.error(err.message || err)
     if (!token.ice_servers) {
-      return error(new Error('twilio response ' + token + ' missing ice_servers'))
+      return console.error('twilio response ' + token + ' missing ice_servers')
     }
 
-    iceServers = token.ice_servers
-      .filter(function (server) {
-        var urls = server.urls || server.url
-        return urls && !/^stun:/.test(urls)
-      })
-    iceServers.unshift({ url: 'stun:23.21.150.121' })
-
     // Support new spec (`RTCIceServer.url` was renamed to `RTCIceServer.urls`)
-    iceServers = iceServers.map(function (server) {
-      if (server.urls === undefined) server.urls = server.url
+    iceServers = token.ice_servers.map(function (server) {
+      if (server.url != null) {
+        server.urls = server.url
+        delete server.url
+      }
       return server
     })
   })
@@ -137,16 +130,21 @@ if (twilioClient) {
   updateIceServers()
 }
 
-app.get('/rtcConfig', cors({
+// WARNING: This is *NOT* a public endpoint. Do not depend on it in your app.
+app.get('/_rtcConfig', cors({
   origin: function (origin, cb) {
     var allowed = CORS_WHITELIST.indexOf(origin) >= 0 ||
       /https?:\/\/localhost(:|$)/.test(origin) ||
-      /https?:\/\/[^.\/]+\.localtunnel\.me$/.test(origin)
+      /https?:\/\/[^./]+\.localtunnel\.me$/.test(origin)
     cb(null, allowed)
   }
 }), function (req, res) {
   if (!iceServers) res.status(404).send({ iceServers: [] })
   else res.send({ iceServers: iceServers })
+})
+
+app.get('/500', (req, res, next) => {
+  next(new Error('Manually visited /500'))
 })
 
 app.get('*', function (req, res) {
@@ -158,31 +156,15 @@ app.get('*', function (req, res) {
 
 // error handling middleware
 app.use(function (err, req, res, next) {
-  error(err)
-  res.status(500).render('error', {
-    title: '500 Server Error - Instant.io',
+  console.error(err.stack)
+  const code = typeof err.code === 'number' ? err.code : 500
+  res.status(code).render('error', {
+    title: '500 Internal Server Error - Instant.io',
     message: err.message || err
   })
 })
 
-var tasks = [
-  function (cb) {
-    httpServer.listen(config.ports.http, config.host, cb)
-  }
-]
-
-if (httpsServer) {
-  tasks.push(function (cb) {
-    httpsServer.listen(config.ports.https, config.host, cb)
-  })
-}
-
-parallel(tasks, function (err) {
-  if (err) throw err
-  debug('listening on port %s', JSON.stringify(config.ports))
+server.listen(config.port, function () {
+  console.log('listening on port %s', config.port)
   downgrade()
 })
-
-function error (err) {
-  console.error(err.stack || err.message || err)
-}

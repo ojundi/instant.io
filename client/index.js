@@ -1,14 +1,14 @@
 var createTorrent = require('create-torrent')
 var debug = require('debug')('instant.io')
 var dragDrop = require('drag-drop')
-var listify = require('listify')
+var get = require('simple-get')
+var moment = require('moment')
 var path = require('path')
-var prettyBytes = require('pretty-bytes')
+var prettierBytes = require('prettier-bytes')
 var throttle = require('throttleit')
 var thunky = require('thunky')
 var uploadElement = require('upload-element')
 var WebTorrent = require('webtorrent')
-var xhr = require('xhr')
 
 var util = require('./util')
 
@@ -20,77 +20,85 @@ global.WEBTORRENT_ANNOUNCE = createTorrent.announceList
     return url.indexOf('wss://') === 0 || url.indexOf('ws://') === 0
   })
 
-if (!WebTorrent.WEBRTC_SUPPORT) {
-  util.error('This browser is unsupported. Please use a browser with WebRTC support.')
-}
+var DISALLOWED = [
+  '6feb54706f41f459f819c0ae5b560a21ebfead8f'
+]
 
 var getClient = thunky(function (cb) {
-  getRtcConfig('/rtcConfig', function (err, rtcConfig) {
-    if (err && window.location.hostname === 'instant.io') {
-      if (err) util.error(err)
-      createClient(rtcConfig)
-    } else if (err) {
-      getRtcConfig('https://instant.io/rtcConfig', function (err, rtcConfig) {
-        if (err) util.error(err)
-        createClient(rtcConfig)
-      })
-    } else {
-      createClient(rtcConfig)
-    }
-  })
-
-  function createClient (rtcConfig) {
-    var client = window.client = new WebTorrent({ rtcConfig: rtcConfig })
+  getRtcConfig(function (err, rtcConfig) {
+    if (err) util.error(err)
+    var client = new WebTorrent({
+      tracker: {
+        rtcConfig: rtcConfig
+      }
+    })
+    window.client = client // for easier debugging
     client.on('warning', util.warning)
     client.on('error', util.error)
     cb(null, client)
+  })
+})
+
+init()
+
+function init () {
+  if (!WebTorrent.WEBRTC_SUPPORT) {
+    util.error('This browser is unsupported. Please use a browser with WebRTC support.')
   }
-})
 
-// For performance, create the client immediately
-getClient(function () {})
+  // For performance, create the client immediately
+  getClient(function () {})
 
-// Seed via upload input element
-var upload = document.querySelector('input[name=upload]')
-uploadElement(upload, function (err, files) {
-  if (err) return util.error(err)
-  files = files.map(function (file) { return file.file })
-  onFiles(files)
-})
+  // Seed via upload input element
+  var upload = document.querySelector('input[name=upload]')
+  if (upload) {
+    uploadElement(upload, function (err, files) {
+      if (err) return util.error(err)
+      files = files.map(function (file) { return file.file })
+      onFiles(files)
+    })
+  }
 
-// Seed via drag-and-drop
-dragDrop('body', onFiles)
+  // Seed via drag-and-drop
+  dragDrop('body', onFiles)
 
-// Download via input element
-document.querySelector('form').addEventListener('submit', function (e) {
-  e.preventDefault()
-  downloadTorrent(document.querySelector('form input[name=torrentId]').value.trim())
-})
+  // Download via input element
+  var form = document.querySelector('form')
+  if (form) {
+    form.addEventListener('submit', function (e) {
+      e.preventDefault()
+      downloadTorrent(document.querySelector('form input[name=torrentId]').value.trim())
+    })
+  }
 
-// Download by URL hash
-onHashChange()
-window.addEventListener('hashchange', onHashChange)
-function onHashChange () {
-  var hash = decodeURIComponent(window.location.hash.substring(1)).trim()
-  if (hash !== '') downloadTorrent(hash)
+  // Download by URL hash
+  onHashChange()
+  window.addEventListener('hashchange', onHashChange)
+  function onHashChange () {
+    var hash = decodeURIComponent(window.location.hash.substring(1)).trim()
+    if (hash !== '') downloadTorrent(hash)
+  }
+
+  // Register a protocol handler for "magnet:" (will prompt the user)
+  if ('registerProtocolHandler' in navigator) {
+    navigator.registerProtocolHandler('magnet', window.location.origin + '#%s', 'Instant.io')
+  }
 }
 
-// Warn when leaving and there are no other peers
-window.addEventListener('beforeunload', onBeforeUnload)
-
-// Register a protocol handler for "magnet:" (will prompt the user)
-navigator.registerProtocolHandler('magnet', window.location.origin + '#%s', 'Instant.io')
-
-function getRtcConfig (url, cb) {
-  xhr(url, function (err, res) {
+function getRtcConfig (cb) {
+  // WARNING: This is *NOT* a public endpoint. Do not depend on it in your app.
+  get.concat({
+    url: '/_rtcConfig',
+    timeout: 5000
+  }, function (err, res, data) {
     if (err || res.statusCode !== 200) {
       cb(new Error('Could not get WebRTC config from server. Using default (without TURN).'))
     } else {
       var rtcConfig
       try {
-        rtcConfig = JSON.parse(res.body)
+        rtcConfig = JSON.parse(data)
       } catch (err) {
-        return cb(new Error('Got invalid WebRTC config from server: ' + res.body))
+        return cb(new Error('Got invalid WebRTC config from server: ' + data))
       }
       debug('got rtc config: %o', rtcConfig)
       cb(null, rtcConfig)
@@ -121,11 +129,19 @@ function isNotTorrentFile (file) {
 }
 
 function downloadTorrent (torrentId) {
-  util.log('Downloading torrent from ' + torrentId)
-  getClient(function (err, client) {
-    if (err) return util.error(err)
-    client.add(torrentId, onTorrent)
+  var disallowed = DISALLOWED.some(function (infoHash) {
+    return torrentId.indexOf(infoHash) >= 0
   })
+
+  if (disallowed) {
+    util.log('File not found ' + torrentId)
+  } else {
+    util.log('Downloading torrent from ' + torrentId)
+    getClient(function (err, client) {
+      if (err) return util.error(err)
+      client.add(torrentId, onTorrent)
+    })
+  }
 }
 
 function downloadTorrentFile (file) {
@@ -151,13 +167,14 @@ function onTorrent (torrent) {
   torrent.on('warning', util.warning)
   torrent.on('error', util.error)
 
+  var upload = document.querySelector('input[name=upload]')
   upload.value = upload.defaultValue // reset upload element
 
   var torrentFileName = path.basename(torrent.name, path.extname(torrent.name)) + '.torrent'
 
   util.log('"' + torrentFileName + '" contains ' + torrent.files.length + ' files:')
   torrent.files.forEach(function (file) {
-    util.log('&nbsp;&nbsp;- ' + file.name + ' (' + prettyBytes(file.length) + ')')
+    util.log('&nbsp;&nbsp;- ' + file.name + ' (' + prettierBytes(file.length) + ')')
   })
 
   util.log(
@@ -169,11 +186,21 @@ function onTorrent (torrent) {
 
   function updateSpeed () {
     var progress = (100 * torrent.progress).toFixed(1)
+
+    var remaining
+    if (torrent.done) {
+      remaining = 'Done.'
+    } else {
+      remaining = moment.duration(torrent.timeRemaining / 1000, 'seconds').humanize()
+      remaining = remaining[0].toUpperCase() + remaining.substring(1) + ' remaining.'
+    }
+
     util.updateSpeed(
-      '<b>Peers:</b> ' + torrent.swarm.wires.length + ' ' +
+      '<b>Peers:</b> ' + torrent.numPeers + ' ' +
       '<b>Progress:</b> ' + progress + '% ' +
-      '<b>Download speed:</b> ' + prettyBytes(window.client.downloadSpeed) + '/s ' +
-      '<b>Upload speed:</b> ' + prettyBytes(window.client.uploadSpeed) + '/s'
+      '<b>Download speed:</b> ' + prettierBytes(window.client.downloadSpeed) + '/s ' +
+      '<b>Upload speed:</b> ' + prettierBytes(window.client.uploadSpeed) + '/s ' +
+      '<b>ETA:</b> ' + remaining
     )
   }
 
@@ -184,7 +211,9 @@ function onTorrent (torrent) {
 
   torrent.files.forEach(function (file) {
     // append file
-    file.appendTo(util.logElem, function (err, elem) {
+    file.appendTo(util.logElem, {
+      maxBlobLength: 2 * 1000 * 1000 * 1000 // 2 GB
+    }, function (err, elem) {
       if (err) return util.error(err)
     })
 
@@ -200,28 +229,4 @@ function onTorrent (torrent) {
       util.log(a)
     })
   })
-}
-
-function onBeforeUnload (e) {
-  if (!e) e = window.event
-
-  if (!window.client || window.client.torrents.length === 0) return
-
-  var isLoneSeeder = window.client.torrents.some(function (torrent) {
-    return torrent.swarm && torrent.swarm.numPeers === 0 && torrent.progress === 1
-  })
-  if (!isLoneSeeder) return
-
-  var names = listify(window.client.torrents.map(function (torrent) {
-    return '"' + (torrent.name || torrent.infoHash) + '"'
-  }))
-
-  var theseTorrents = window.client.torrents.length >= 2
-    ? 'these torrents'
-    : 'this torrent'
-  var message = 'You are the only person sharing ' + names + '. ' +
-    'Consider leaving this page open to continue sharing ' + theseTorrents + '.'
-
-  if (e) e.returnValue = message // IE, Firefox
-  return message // Safari, Chrome
 }
